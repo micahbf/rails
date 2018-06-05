@@ -55,7 +55,7 @@ module ActiveSupport
       def try_read
         return unless content_path.exist?
         content = content_path.binread
-        try_decrypt_from_env_keys(content) || try_decrypt_from_key_paths(content)
+        try_read_from_env_keys(content) || try_read_from_key_paths(content)
       end
 
       def candidate_key_paths
@@ -82,14 +82,14 @@ module ActiveSupport
           handle_missing_key
       end
 
-      def try_decrypt_from_env_keys(content)
+      def try_read_from_env_keys(content)
         candidate_env_keys.find do |env_var|
           key = read_env_key(env_var)
           try_decrypt(key, content)
         end
       end
 
-      def try_decrypt_from_key_paths(content)
+      def try_read_from_key_paths(content)
         candidate_key_paths.find do |path|
           key = read_key_file(path)
           try_decrypt(key, content)
