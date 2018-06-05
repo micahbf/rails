@@ -26,26 +26,21 @@ module ActiveSupport
     end
 
 
-    attr_reader :content_path, :key_path, :env_key, :raise_if_missing_key
+    attr_reader :content_path, :key_path, :env_key, :raise_if_missing_key, :key
 
     def initialize(content_path:, key_path:, env_key:, raise_if_missing_key:)
-      @content_path, @key_path = Pathname.new(content_path), Pathname.new(key_path)
+      @content_path, @key_path = Pathname.new(content_path), key_path
       @env_key, @raise_if_missing_key = env_key, raise_if_missing_key
     end
 
-    def key
-      read_env_key || read_key_file || handle_missing_key
-    end
-
     def read
-      if !key.nil? && content_path.exist?
-        decrypt content_path.binread
-      else
-        raise MissingContentError, content_path
-      end
+      raise MissingContentError unless content_path.exist?
+
+      try_read || handle_missing_key
     end
 
     def write(contents)
+      try_read || use_first_available_key
       IO.binwrite "#{content_path}.tmp", encrypt(contents)
       FileUtils.mv "#{content_path}.tmp", content_path
     end
@@ -56,6 +51,51 @@ module ActiveSupport
 
 
     private
+
+      def try_read
+        return unless content_path.exist?
+        content = content_path.binread
+        try_decrypt_from_env_keys(content) || try_decrypt_from_key_paths(content)
+      end
+
+      def candidate_key_paths
+        Dir.glob(key_path).map { |path| Pathname.new(path) }
+      end
+
+      def candidate_env_keys
+        env_key.is_a?(RegExp) ? ENV.keys.select { |k| k =~ env_key } : [env_key]
+      end
+
+      def try_decrypt(key, contents)
+        encryptor = ActiveSupport::MessageEncryptor.new([ key ].pack("H*"), cipher: CIPHER)
+        decrypted = encryptor.decrypt_and_verify(contents)
+        @key = key
+        @encryptor = encryptor
+        decrypted
+      rescue ActiveSupport::MessageEncryptor::InvalidMessage
+        nil
+      end
+
+      def use_first_available_key
+        read_env_key(candidate_env_keys.first) ||
+          read_key_file(candidate_key_paths.first) ||
+          handle_missing_key
+      end
+
+      def try_decrypt_from_env_keys(content)
+        candidate_env_keys.find do |env_var|
+          key = read_env_key(env_var)
+          try_decrypt(key, content)
+        end
+      end
+
+      def try_decrypt_from_key_paths(content)
+        candidate_key_paths.find do |path|
+          key = read_key_file(path)
+          try_decrypt(key, content)
+        end
+      end
+
       def writing(contents)
         tmp_file = "#{Process.pid}.#{content_path.basename.to_s.chomp('.enc')}"
         tmp_path = Pathname.new File.join(Dir.tmpdir, tmp_file)
@@ -79,17 +119,12 @@ module ActiveSupport
         encryptor.decrypt_and_verify contents
       end
 
-      def encryptor
-        @encryptor ||= ActiveSupport::MessageEncryptor.new([ key ].pack("H*"), cipher: CIPHER)
+      def read_env_key(env_var)
+        ENV[env_var]
       end
 
-
-      def read_env_key
-        ENV[env_key]
-      end
-
-      def read_key_file
-        key_path.binread.strip if key_path.exist?
+      def read_key_file(path)
+        path.binread.strip if path.exist?
       end
 
       def handle_missing_key
